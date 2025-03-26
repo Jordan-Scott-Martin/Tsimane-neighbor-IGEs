@@ -22,6 +22,16 @@ stan.df$yearobs = std.v(stan.df$yearobs)
 stan.df$r[is.na(stan.df$r)] = -99
 stan.df$mean_r[is.na(stan.df$mean_r)] = -99
 
+#function for easy extraction of posteriors
+extract_samples = function(fit_obj) {
+  vars <- fit_obj$metadata()$stan_variables
+  draws <- posterior::as_draws_rvars(fit_obj$draws())
+  
+  lapply(vars, \(var_name){  
+    posterior::draws_of(draws[[var_name]], with_chains = FALSE)
+  }) |> setNames(vars)
+}
+
 #Estimate models in Stan##################################
 
 #set path for cmdstan
@@ -30,7 +40,6 @@ stan.df$mean_r[is.na(stan.df$mean_r)] = -99
 #unadjusted heritability model (no spouse or neighbor effects)
 mod_h2 = cmdstan_model(stan_file = "fertility unadj model.stan",
                         stanc_options = list("O1"))
-
 
 if (!file.exists("fit_tsi_h2.RDS")) {
 
@@ -49,10 +58,9 @@ if (!file.exists("fit_tsi_h2.RDS")) {
 
 }
 
-fit_h2 = readRDS("fit_tsi_h2.RDS")
-
 #calculate h2 unadjusted for social effects
-post = posterior::as_draws_rvars(fit_h2$draws())
+fit_h2 = readRDS("fit_tsi_h2.RDS")
+post = extract(fit_h2)
 median(post$h2); quantile(post$h2, c(0.05, 0.95))
 
 #average IGE model
@@ -77,16 +85,15 @@ if (!file.exists("fit_tsi_avg.RDS")) {
 
 }
 
-fit_avg = readRDS("fit_tsi_avg.RDS")
-
 #extract posterior mean and SD
 #priors are important for identification and
 #effective sampling of fluctuating selection models
-post = posterior::as_draws_rvars(fit_avg$draws())
-stan.df$mean_bsw = mean(draws_of(post$b_SW))
-stan.df$sd_bsw = sd(draws_of(post$b_SW))
-stan.df$mean_h2 = mean(draws_of(post$h2))
-stan.df$sd_h2 = sd(draws_of(post$h2))
+fit_avg = readRDS("fit_tsi_avg.RDS")
+post = extract(fit_avg)
+stan.df$mean_bsw = mean(post$b_SW)
+stan.df$sd_bsw = sd(post$b_SW)
+stan.df$mean_h2 = mean(post$h2)
+stan.df$sd_h2 = sd(post$h2)
 
 #community effect model
 mod_c = cmdstan_model(stan_file = "fertility ige model_neighbors_c.stan",
@@ -105,8 +112,6 @@ if (!file.exists("fit_tsi_c.RDS")) {
 
   fit$save_object(file = "fit_tsi_c.RDS")
 }
-
-fit_c = readRDS("fit_tsi_c.RDS")
 
 #neighborhood effect (frequency- and density-dependent) model
 mod_fd = cmdstan_model(stan_file = "fertility ige model_neighbors_fd.stan",
@@ -127,24 +132,22 @@ if (!file.exists("fit_tsi_fd.RDS")) {
   fit$save_object(file = "fit_tsi_fd.RDS")
 }
 
-fit_fd = readRDS("fit_tsi_fd.RDS")
-
 #summarize and plot results###############################
 
-fit = readRDS("fit_tsi_avg.RDS")
-fit2 = readRDS("fit_tsi_c.RDS")
-fit3 = readRDS("fit_tsi_fd.RDS")
-post = posterior::as_draws_rvars(fit$draws())
-post2 = posterior::as_draws_rvars(fit2$draws())
-post3 = posterior::as_draws_rvars(fit3$draws())
+fit_avg = readRDS("fit_tsi_avg.RDS")
+fit_c = readRDS("fit_tsi_c.RDS")
+fit_fd = readRDS("fit_tsi_fd.RDS")
+post = extract(fit_avg)
+post2 = extract(fit_c)
+post3 = extract(fit_fd)
 
 #plot environmental effects####
-sd_a = draws_of(sqrt(post$b_2^2 + post$b_3^2))
-sd_M = draws_of(post$sd_M)
-sd_Y = draws_of(post$sd_Y)
-sd_C = draws_of(post$alpha)
-sd_F = draws_of(post$sd_F)
-sd_sig = draws_of(post$sd_E)
+sd_a = sqrt(post$b_2^2 + post$b_3^2)
+sd_M = post$sd_M
+sd_Y = post$sd_Y
+sd_C = post$alpha
+sd_F = post$sd_F
+sd_sig = post$sd_E
 de = cbind(sd_a,sd_M,sd_Y,sd_C,sd_F,sd_sig)
 colnames(de) = c("Age", "Maternal", "Birth years", "Spatial (community)", "Father / spouse", "Residual")
 del = reshape2::melt(de)
@@ -215,8 +218,8 @@ median(delta_eIF); quantile(delta_eIF, c(0.05, 0.95))
 #fluctuating selection
 median(post2$sd_Cb^2 * post2$sd_G^2); quantile(post2$sd_Cb^2 * post2$sd_G^2,c(0.05,0.95))
 cov_c = list()
-for(i in 1:nrow(draws_of(post2$W_Cb))){
-  cov_c[[i]] = draws_of(post2$sd_G)[i]^2 * draws_of(post2$W_Cb)[i,]
+for(i in 1:nrow(post2$W_Cb)){
+  cov_c[[i]] = post2$sd_G[i]^2 * post2$W_Cb[i,]
 }
 cov_cv = do.call(rbind.data.frame, cov_c)
 colnames(cov_cv) = 1:82
@@ -230,8 +233,8 @@ median(post3$b_Ir); quantile(post3$b_Ir, c(0.05,0.95))
 sum(post3$b_Ir>0)/length(post3$b_Ir)
 
 #plot (co)variance####
-df = data.frame(delta = c(draws_of(V_D), draws_of(V_Im), draws_of(V_I), draws_of(cov_DI)), 
-                mod = rep(c("a","b","c", "d"), each = length(draws_of(V_D))))
+df = data.frame(delta = c(V_D, V_Im, V_I, cov_DI), 
+                mod = rep(c("a","b","c", "d"), each = length(V_D)))
 var.p = 
       ggplot(data = df,
       aes(x = delta, y = after_stat(scaled), group = mod, color = mod, fill = mod)) +
@@ -251,20 +254,21 @@ var.p =
         strip.background = element_blank(),
         panel.spacing = unit(2, "lines"))+
       guides(aes(color = "none", fill = "none"))+
-      geom_vline(data=subset(df, mod=="a"), aes(xintercept = median(V_D)), lwd = 0.5, lty = "dashed")+
-      geom_vline(data=subset(df, mod=="b"), aes(xintercept = median(V_Im)), lwd = 0.5, lty = "dashed")+
-      geom_vline(data=subset(df, mod=="c"), aes(xintercept = median(V_I)), lwd = 0.5, lty = "dashed")+
-      geom_vline(data=subset(df, mod=="d"), aes(xintercept = median(cov_DI)),lwd = 0.5, lty = "dashed")
+      geom_vline(data=subset(df, mod=="a"), aes(xintercept = 0), lwd = 0.5, lty = "dashed")+
+      geom_vline(data=subset(df, mod=="b"), aes(xintercept = 0), lwd = 0.5, lty = "dashed")+
+      geom_vline(data=subset(df, mod=="c"), aes(xintercept = 0), lwd = 0.5, lty = "dashed")+
+      geom_vline(data=subset(df, mod=="d"), aes(xintercept = 0),lwd = 0.5, lty = "dashed")
 
-ggsave("var_plot.png", var.p, width = 5, height = 5, units = "in")
+ggsave("var_plot.png", var.p, width = 5, height = 5, units = "in", dpi = 300)
 
 
 #plot social selection####
-df = data.frame(delta = draws_of(beta_SW))
+df = data.frame(delta = beta_SW)
 
 beta_sd = 
       ggplot(data = df,
       aes(x = delta, y = after_stat(scaled))) +
+      coord_cartesian(xlim=c(-3,3))+
       geom_density(size = 1.25, alpha = 0.75, color = "darkblue", fill = "lightblue") + 
       labs(x = "\n Selection")+
       theme(legend.title = element_text(face = "bold"),
@@ -279,14 +283,14 @@ beta_sd =
         strip.background = element_blank(),
         panel.spacing = unit(2, "lines"))+
       guides(aes(color = "none", fill = "none"))+
-      geom_vline(data=df, aes(xintercept = median(beta_SW)), lwd = 0.5, lty = "dashed")
+      geom_vline(data=df, aes(xintercept = 0), lwd = 0.5, lty = "dashed")
 
-ggsave("beta_plot.png", beta_sd, width = 4, height = 3, units = "in")
+ggsave("beta_plot.png", beta_sd, width = 4, height = 3, units = "in", dpi = 300)
 
 
 #plot evolvability####
-df = data.frame(delta = c(draws_of(e_0), draws_of(e_wIF), draws_of(e_w)), 
-                type = rep(c("a","b","c"), each = length(draws_of(e_0))))
+df = data.frame(delta = c(e_0, e_wIF, e_w), 
+                type = rep(c("a","b","c"), each = length(e_0)))
 
 evolv = 
       ggplot(data = df,
@@ -310,17 +314,17 @@ evolv =
         #strip.text.x = element_blank(),
         panel.spacing = unit(2, "lines"))+
       guides(aes(color = "none", fill = "none"))+
-      geom_vline(data=subset(df, type=="a"), aes(xintercept = median(e_0)), lwd = 0.5, lty = "dashed")+
-      geom_vline(data=subset(df, type=="b"), aes(xintercept = median(e_wIF)), lwd = 0.5, lty = "dashed")+
-      geom_vline(data=subset(df, type=="c"), aes(xintercept = median(e_w)), lwd = 0.5, lty = "dashed")
+      geom_vline(data=subset(df, type=="a"), aes(xintercept = 0), lwd = 0.5, lty = "dashed")+
+      geom_vline(data=subset(df, type=="b"), aes(xintercept = 0), lwd = 0.5, lty = "dashed")+
+      geom_vline(data=subset(df, type=="c"), aes(xintercept = 0), lwd = 0.5, lty = "dashed")
 
-ggsave("evolv_plot.png", evolv, width = 3, height = 4, units = "in")
+ggsave("evolv_plot.png", evolv, width = 3, height = 4, units = "in", dpi = 300)
 
 
 #plot community fluctuations####
 cov_c = list()
-for(i in 1:nrow(draws_of(post2$W_Cb))){
-  cov_c[[i]] = draws_of(post2$sd_G)[i]^2 * draws_of(post2$W_Cb)[i,]
+for(i in 1:nrow(post2$W_Cb)){
+  cov_c[[i]] = post2$sd_G[i]^2 * post2$W_Cb[i,]
 }
 cov_cv = do.call(rbind.data.frame, cov_c)
 colnames(cov_cv) = 1:stan.df$C
@@ -348,13 +352,13 @@ ggplot(wcbl, aes(x = value, y = variable))+
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank())+
   guides(fill = "none", color = "none")
-ggsave("com_plot.png", com.p, width = 3, height = 8, units = "in")
+ggsave("com_plot.png", com.p, width = 5, height = 4, units = "in", dpi = 300)
 
 #density-dependence####
 dp1 = 
-  ggplot(data = data.frame(draws_of(post3$b_D)), aes(x = draws_of(post3$b_D))) +
+  ggplot(data = data.frame(post3$b_D), aes(x = post3$b_D)) +
   stat_density(aes(y = after_stat(scaled)), size = 1.25, color = "springgreen3", fill = "lightgreen")+
-  geom_vline(xintercept = median(draws_of(post3$b_D)), lty = "dashed")+
+  geom_vline(xintercept = 0, lty = "dashed")+
   scale_x_continuous(expand = c(0,0))+
   labs(x = "\n beta_D", y = "\n cov(Wd,Wi)")+
   coord_cartesian(xlim=c(-0.3,0.3))+
@@ -372,12 +376,12 @@ dp1 =
         strip.background = element_blank(),
         panel.spacing = unit(2, "lines"))+
   guides(aes(color = "none", fill = "none"))
-ggsave("bd_plot.png", dp1, width = 4, height = 4, units = "in")
+ggsave("bd_plot.png", dp1, width = 4, height = 4, units = "in", dpi = 300)
 
 seq = 1:21
 beta_d = list()
-for(i in 1:length(draws_of(post3$b_D))){
-  beta_d[[i]] = (draws_of(post3$b_SW_0)[i] + draws_of(post3$b_D)[i] * seq) * draws_of(post3$sd_G)[i]^2
+for(i in 1:length(post3$b_D)){
+  beta_d[[i]] = (post3$b_SW_0[i] + post3$b_D[i] * seq) * post3$sd_G[i]^2
   }
 bd = do.call("rbind", beta_d)
 bd = reshape2::melt(bd)
@@ -402,10 +406,10 @@ dp2 =
         strip.background = element_blank(),
         panel.spacing = unit(2, "lines"))+
       guides(aes(color = "none", fill = "none"))
-ggsave("bd2_plot.png", dp2, width = 4, height = 4, units = "in")
+ggsave("bd2_plot.png", dp2, width = 4, height = 4, units = "in", dpi = 300)
 
 #frequency-dependence####
-dff = data.frame(bi = draws_of(post3$b_I), bir = draws_of(post3$b_Ir))
+dff = data.frame(bi = post3$b_I, bir = post3$b_Ir)
 dff = reshape2::melt(dff)
 dfm = data.frame(bi = median(post3$b_I), bir = median(post3$b_Ir))
 dfm = reshape2::melt(dfm)
@@ -417,7 +421,7 @@ df1 =
   scale_color_manual(values = c("royalblue4","darkmagenta"))+
   scale_fill_manual(values = c("royalblue","orchid"))+
   facet_wrap(.~ variable)+
-    geom_vline(data = dfm, mapping = aes(xintercept = value), lty = "dashed")+
+    geom_vline(aes(xintercept = 0), lty = "dashed")+
   labs(x = "\n beta_I", y = "\n cov(Wd,Wi)")+
   coord_cartesian(xlim=c(-3,4.5))+
   theme(legend.title = element_text(face = "bold"),
@@ -434,14 +438,14 @@ df1 =
         strip.background = element_blank(),
         panel.spacing = unit(2, "lines"))+
   guides(aes(color = "none", fill = "none"))
-ggsave("bf_plot.png", df1, width = 4, height = 4, units = "in")
+ggsave("bf_plot.png", df1, width = 4, height = 4, units = "in", dpi = 300)
 
 seq = seq(-1, 1, by = 0.05)
 beta_i = list()
 beta_ir = list()
-for(i in 1:length(draws_of(post3$b_I))){
-  beta_i[[i]] = (draws_of(post$b_SW)[i] + draws_of(post3$b_I)[i] * seq + draws_of(post3$b_Ir)[i] * seq * 0) * draws_of(post3$sd_G)[i]^2
-  beta_ir[[i]] = (draws_of(post$b_SW)[i] + draws_of(post3$b_I)[i] * seq + draws_of(post3$b_Ir)[i] * seq * 1.79) * draws_of(post3$sd_G)[i]^2
+for(i in 1:length(post3$b_I)){
+  beta_i[[i]] = (post$b_SW[i] + post3$b_I[i] * seq + post3$b_Ir[i] * seq * 0) * post3$sd_G[i]^2
+  beta_ir[[i]] = (post$b_SW[i] + post3$b_I[i] * seq + post3$b_Ir[i] * seq * 1.79) * post3$sd_G[i]^2
 }
 bi = data.frame(do.call("rbind", beta_i))
 bir = data.frame(do.call("rbind", beta_ir))
@@ -477,11 +481,11 @@ df2 =
               strip.background = element_blank(),
               panel.spacing = unit(2, "lines"))+
         guides(aes(color = "none", fill = "none"))
-ggsave("bf2_plot.png", df2, width = 4, height = 4, units = "in")
+ggsave("bf2_plot.png", df2, width = 4, height = 4, units = "in", dpi = 300)
 
 #combine####
 dpc = plot_grid(dp1,dp2, ncol = 1)
 dfc = plot_grid(df1,df2, ncol = 1)
 dc = plot_grid(com.p,dpc,dfc, nrow = 1, ncol = 3)
-save_plot("dpc_plot.png",dc, base_width = 10, base_height = 5, units = "in")
+save_plot("dpc_plot.png",dc, base_width = 10, base_height = 5, units = "in", dpi = 300)
 
